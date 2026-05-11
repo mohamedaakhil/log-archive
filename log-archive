@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+
+# ╔══════════════════════════════════════════════════╗
+# ║           LOG ARCHIVE TOOL v1.0                  ║
+# ║  Compress & store logs with timestamp tracking   ║
+# ╚══════════════════════════════════════════════════╝
+
+set -euo pipefail
+
+# ─── Colors & Styles ──────────────────────────────────────────────────────────
+RESET="\033[0m"
+BOLD="\033[1m"
+DIM="\033[2m"
+GREEN="\033[38;5;82m"
+CYAN="\033[38;5;51m"
+YELLOW="\033[38;5;220m"
+RED="\033[38;5;196m"
+BLUE="\033[38;5;75m"
+GRAY="\033[38;5;245m"
+WHITE="\033[38;5;255m"
+
+# ─── Constants ────────────────────────────────────────────────────────────────
+ARCHIVE_BASE_DIR="${HOME}/.log-archives"
+LOG_RECORD_FILE="${ARCHIVE_BASE_DIR}/archive_history.log"
+SCRIPT_NAME="$(basename "$0")"
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+print_banner() {
+  echo -e ""
+  echo -e "${CYAN}${BOLD}  ██╗      ██████╗  ██████╗      █████╗ ██████╗  ██████╗██╗  ██╗${RESET}"
+  echo -e "${CYAN}${BOLD}  ██║     ██╔═══██╗██╔════╝     ██╔══██╗██╔══██╗██╔════╝██║  ██║${RESET}"
+  echo -e "${CYAN}${BOLD}  ██║     ██║   ██║██║  ███╗    ███████║██████╔╝██║     ███████║${RESET}"
+  echo -e "${CYAN}${BOLD}  ██║     ██║   ██║██║   ██║    ██╔══██║██╔══██╗██║     ██╔══██║${RESET}"
+  echo -e "${CYAN}${BOLD}  ███████╗╚██████╔╝╚██████╔╝    ██║  ██║██║  ██║╚██████╗██║  ██║${RESET}"
+  echo -e "${CYAN}${BOLD}  ╚══════╝ ╚═════╝  ╚═════╝     ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝${RESET}"
+  echo -e "${GRAY}                        Log Archive Tool v1.0${RESET}"
+  echo -e ""
+}
+
+print_usage() {
+  echo -e "${BOLD}${WHITE}USAGE${RESET}"
+  echo -e "  ${CYAN}${SCRIPT_NAME}${RESET} ${YELLOW}<log-directory>${RESET} ${GRAY}[options]${RESET}"
+  echo -e ""
+  echo -e "${BOLD}${WHITE}ARGUMENTS${RESET}"
+  echo -e "  ${YELLOW}<log-directory>${RESET}    Path to the directory containing logs to archive"
+  echo -e ""
+  echo -e "${BOLD}${WHITE}OPTIONS${RESET}"
+  echo -e "  ${GREEN}-o, --output${RESET} <dir>   Custom output directory for archives (default: ~/.log-archives)"
+  echo -e "  ${GREEN}-p, --prefix${RESET} <name>  Custom prefix for archive filename"
+  echo -e "  ${GREEN}-l, --list${RESET}            List all previous archives"
+  echo -e "  ${GREEN}-h, --help${RESET}            Show this help message"
+  echo -e ""
+  echo -e "${BOLD}${WHITE}EXAMPLES${RESET}"
+  echo -e "  ${GRAY}# Archive system logs${RESET}"
+  echo -e "  ${CYAN}${SCRIPT_NAME}${RESET} /var/log"
+  echo -e ""
+  echo -e "  ${GRAY}# Archive to a custom directory${RESET}"
+  echo -e "  ${CYAN}${SCRIPT_NAME}${RESET} /var/log ${GREEN}--output${RESET} /backup/logs"
+  echo -e ""
+  echo -e "  ${GRAY}# Archive with a custom filename prefix${RESET}"
+  echo -e "  ${CYAN}${SCRIPT_NAME}${RESET} /var/log ${GREEN}--prefix${RESET} production"
+  echo -e ""
+  echo -e "  ${GRAY}# List archive history${RESET}"
+  echo -e "  ${CYAN}${SCRIPT_NAME}${RESET} ${GREEN}--list${RESET}"
+  echo -e ""
+}
+
+log_step() {
+  local icon="$1"
+  local msg="$2"
+  echo -e "  ${icon}  ${msg}"
+}
+
+log_success() { log_step "${GREEN}✔${RESET}" "${WHITE}$1${RESET}"; }
+log_info()    { log_step "${CYAN}›${RESET}"  "${GRAY}$1${RESET}"; }
+log_warn()    { log_step "${YELLOW}⚠${RESET}" "${YELLOW}$1${RESET}"; }
+log_error()   { log_step "${RED}✖${RESET}"  "${RED}$1${RESET}"; }
+
+divider() {
+  echo -e "  ${GRAY}$(printf '─%.0s' {1..54})${RESET}"
+}
+
+format_bytes() {
+  local bytes=$1
+  if   (( bytes < 1024 ));       then echo "${bytes} B"
+  elif (( bytes < 1048576 ));    then echo "$(( bytes / 1024 )) KB"
+  elif (( bytes < 1073741824 )); then echo "$(( bytes / 1048576 )) MB"
+  else                                 echo "$(( bytes / 1073741824 )) GB"
+  fi
+}
+
+list_archives() {
+  print_banner
+  echo -e "${BOLD}${WHITE}  Archive History${RESET}"
+  divider
+
+  if [[ ! -f "$LOG_RECORD_FILE" ]]; then
+    log_warn "No archive history found."
+    echo ""
+    return
+  fi
+
+  local count=0
+  local total
+  total=$(wc -l < "$LOG_RECORD_FILE")
+  while IFS='|' read -r timestamp archive_path source_dir size; do
+    count=$(( count + 1 ))
+    echo -e "  ${GRAY}${count}.${RESET} ${WHITE}$(basename "$archive_path")${RESET}"
+    echo -e "     ${GRAY}Archived :${RESET} ${CYAN}${timestamp}${RESET}"
+    echo -e "     ${GRAY}Source   :${RESET} ${source_dir}"
+    echo -e "     ${GRAY}Size     :${RESET} ${GREEN}${size}${RESET}"
+    echo -e "     ${GRAY}Path     :${RESET} ${DIM}${archive_path}${RESET}"
+    [[ $count -lt $total ]] && echo ""
+  done < "$LOG_RECORD_FILE"
+
+  divider
+  echo -e "  ${GRAY}Total archives: ${WHITE}${BOLD}${count}${RESET}"
+  echo ""
+}
+
+# ─── Main Archive Function ────────────────────────────────────────────────────
+archive_logs() {
+  local source_dir="$1"
+  local output_dir="${2:-$ARCHIVE_BASE_DIR}"
+  local prefix="${3:-logs_archive}"
+
+  print_banner
+
+  # ── Validate source directory ──────────────────────────────────────────────
+  echo -e "${BOLD}${WHITE}  Preflight Checks${RESET}"
+  divider
+
+  if [[ ! -e "$source_dir" ]]; then
+    log_error "Directory not found: ${source_dir}"
+    echo ""
+    exit 1
+  fi
+
+  if [[ ! -d "$source_dir" ]]; then
+    log_error "Not a directory: ${source_dir}"
+    echo ""
+    exit 1
+  fi
+
+  if [[ ! -r "$source_dir" ]]; then
+    log_error "No read permission: ${source_dir}"
+    log_warn  "Try running with sudo"
+    echo ""
+    exit 1
+  fi
+
+  log_success "Source directory exists and is readable"
+
+  # Count files
+  local file_count
+  file_count=$(find "$source_dir" -maxdepth 3 -type f 2>/dev/null | wc -l | tr -d ' ')
+  log_info "Found ${BOLD}${WHITE}${file_count}${RESET}${GRAY} files in ${source_dir}"
+
+  # Source size
+  local source_size_bytes
+  source_size_bytes=$(du -sb "$source_dir" 2>/dev/null | cut -f1 || echo "0")
+  local source_size_human
+  source_size_human=$(format_bytes "$source_size_bytes")
+  log_info "Source size: ${BOLD}${WHITE}${source_size_human}${RESET}"
+
+  # ── Prepare output directory ───────────────────────────────────────────────
+  echo ""
+  echo -e "${BOLD}${WHITE}  Preparing Archive${RESET}"
+  divider
+
+  mkdir -p "$output_dir"
+  log_success "Output directory ready: ${DIM}${output_dir}${RESET}"
+
+  mkdir -p "$(dirname "$LOG_RECORD_FILE")"
+
+  # ── Build archive filename ─────────────────────────────────────────────────
+  local timestamp
+  timestamp=$(date +"%Y%m%d_%H%M%S")
+  local datetime_human
+  datetime_human=$(date +"%Y-%m-%d %H:%M:%S %Z")
+
+  local archive_name="${prefix}_${timestamp}.tar.gz"
+  local archive_path="${output_dir}/${archive_name}"
+
+  log_info "Archive name: ${BOLD}${WHITE}${archive_name}${RESET}"
+
+  # ── Compress ───────────────────────────────────────────────────────────────
+  echo ""
+  echo -e "${BOLD}${WHITE}  Compressing Logs${RESET}"
+  divider
+  echo -e "  ${CYAN}›${RESET}  ${GRAY}Running tar -czf ...${RESET}"
+  echo ""
+
+  local tar_start
+  tar_start=$(date +%s)
+
+  if tar -czf "$archive_path" -C "$(dirname "$source_dir")" "$(basename "$source_dir")" 2>/dev/null; then
+    local tar_end
+    tar_end=$(date +%s)
+    local elapsed=$(( tar_end - tar_start ))
+
+    local archive_size_bytes
+    archive_size_bytes=$(stat -c%s "$archive_path" 2>/dev/null || stat -f%z "$archive_path" 2>/dev/null || echo "0")
+    local archive_size_human
+    archive_size_human=$(format_bytes "$archive_size_bytes")
+
+    # Compression ratio
+    local ratio="N/A"
+    if (( source_size_bytes > 0 && archive_size_bytes > 0 )); then
+      ratio=$(awk "BEGIN { printf \"%.1f\", ($source_size_bytes / $archive_size_bytes) }")
+      ratio="${ratio}:1"
+    fi
+
+    log_success "Compression complete in ${BOLD}${WHITE}${elapsed}s${RESET}"
+
+    echo ""
+    echo -e "${BOLD}${WHITE}  Archive Summary${RESET}"
+    divider
+    echo -e "  ${GRAY}Archive File  :${RESET}  ${WHITE}${BOLD}${archive_name}${RESET}"
+    echo -e "  ${GRAY}Location      :${RESET}  ${DIM}${archive_path}${RESET}"
+    echo -e "  ${GRAY}Source Size   :${RESET}  ${WHITE}${source_size_human}${RESET}"
+    echo -e "  ${GRAY}Archive Size  :${RESET}  ${GREEN}${BOLD}${archive_size_human}${RESET}"
+    echo -e "  ${GRAY}Compression   :${RESET}  ${CYAN}${ratio}${RESET}"
+    echo -e "  ${GRAY}Files Packed  :${RESET}  ${WHITE}${file_count}${RESET}"
+    echo -e "  ${GRAY}Timestamp     :${RESET}  ${YELLOW}${datetime_human}${RESET}"
+    divider
+    echo ""
+
+    # ── Record to history log ────────────────────────────────────────────────
+    echo "${datetime_human}|${archive_path}|${source_dir}|${archive_size_human}" >> "$LOG_RECORD_FILE"
+    log_success "Recorded to archive history: ${DIM}${LOG_RECORD_FILE}${RESET}"
+    echo ""
+    echo -e "  ${GREEN}${BOLD}✔  Archive created successfully!${RESET}"
+    echo ""
+
+  else
+    log_error "Compression failed!"
+    log_warn  "Check permissions and available disk space"
+    echo ""
+    exit 1
+  fi
+}
+
+# ─── Argument Parsing ─────────────────────────────────────────────────────────
+main() {
+  if [[ $# -eq 0 ]]; then
+    print_banner
+    print_usage
+    exit 0
+  fi
+
+  local source_dir=""
+  local output_dir="$ARCHIVE_BASE_DIR"
+  local prefix="logs_archive"
+  local do_list=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        print_banner
+        print_usage
+        exit 0
+        ;;
+      -l|--list)
+        do_list=true
+        shift
+        ;;
+      -o|--output)
+        if [[ -z "${2:-}" ]]; then
+          echo -e "${RED}Error: --output requires a directory path${RESET}"
+          exit 1
+        fi
+        output_dir="$2"
+        shift 2
+        ;;
+      -p|--prefix)
+        if [[ -z "${2:-}" ]]; then
+          echo -e "${RED}Error: --prefix requires a name${RESET}"
+          exit 1
+        fi
+        prefix="$2"
+        shift 2
+        ;;
+      -*)
+        echo -e "${RED}Unknown option: $1${RESET}"
+        echo -e "Run '${CYAN}${SCRIPT_NAME} --help${RESET}' for usage."
+        exit 1
+        ;;
+      *)
+        if [[ -z "$source_dir" ]]; then
+          source_dir="$1"
+        else
+          echo -e "${RED}Unexpected argument: $1${RESET}"
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if $do_list; then
+    list_archives
+    exit 0
+  fi
+
+  if [[ -z "$source_dir" ]]; then
+    print_banner
+    echo -e "${RED}  Error: No log directory specified.${RESET}"
+    echo ""
+    print_usage
+    exit 1
+  fi
+
+  archive_logs "$source_dir" "$output_dir" "$prefix"
+}
+
+main "$@"
